@@ -1,0 +1,302 @@
+#include "raylib.h"
+#include <cmath>
+#include <ctime>
+
+#define SCREEN_WIDTH 1920
+#define SCREEN_HEIGHT 1200
+#define TERRAIN_SEGMENT_WIDTH 5 // Width of each terrain segment in pixels
+#define TERRAIN_WIDTH (SCREEN_WIDTH / TERRAIN_SEGMENT_WIDTH) // Number of terrain segments
+#define MAX_HEIGHT 500
+#define HEIGHT_DIFF 4
+
+float RemapValue(float value, float inputMin, float inputMax, float outputMin, float outputMax) {
+    return outputMin + (outputMax - outputMin) * ((value - inputMin) / (inputMax - inputMin));
+}
+
+class Tank {
+private:
+    float speed;
+    Vector2 position;
+    int width;
+    int height;
+    float rotation;
+    float accumulatedMovement;
+    float gravity;
+    float verticalVelocity;
+
+public:
+    Tank(float tankSpeed, Vector2 startPosition) {
+        speed = tankSpeed;
+        position = startPosition;
+        width = 50;
+        height = 30;
+        rotation = 0.0f;
+        accumulatedMovement = 0.0f;
+        gravity = 0.3f; // Set gravity value
+        verticalVelocity = 0.0f;
+    }
+
+    void ApplyGravity(int terrain[]) {
+        // Apply gravity to the tank's vertical position
+        verticalVelocity += gravity;
+        position.y += verticalVelocity;
+
+        // Get the terrain height at the tank's current position
+        int terrainIndex = position.x / TERRAIN_SEGMENT_WIDTH;
+        if (terrainIndex >= 0 && terrainIndex < TERRAIN_WIDTH) {
+            float terrainHeight = SCREEN_HEIGHT - terrain[terrainIndex] - height;
+            if (position.y > terrainHeight) {
+                position.y = terrainHeight;
+                verticalVelocity = 0; // Reset vertical velocity when on terrain
+            }
+        }
+    }
+
+    void HandleInput(int terrain[]) {
+        float previousPositionX = position.x;
+
+        if (IsKeyDown(KEY_A)) {
+            position.x -= speed;
+        }
+        if (IsKeyDown(KEY_D)) {
+            position.x += speed;
+        }
+
+        // Ensure tank position stays within screen bounds
+        if (position.x < 0) position.x = 0;
+        if (position.x > SCREEN_WIDTH - width) position.x = SCREEN_WIDTH - width;
+
+        // Accumulate the horizontal movement
+        accumulatedMovement += fabs(position.x - previousPositionX);
+
+        // Calculate the slope and angle for rotation if horizontal movement exceeds 5 pixels
+        int terrainIndex = position.x / TERRAIN_SEGMENT_WIDTH;
+        if (accumulatedMovement >= 5.0f) {
+            if (terrainIndex >= 0 && terrainIndex < TERRAIN_WIDTH - 1) {
+                float heightDifference = terrain[terrainIndex + 1] - terrain[terrainIndex];
+                float distance = TERRAIN_SEGMENT_WIDTH;
+                rotation = atan2(heightDifference, distance) * (180.0f / PI);
+            }
+            accumulatedMovement = 0.0f; // Reset the accumulated movement after updating rotation
+        }
+    }
+
+    Vector2 GetPosition() const {
+        return position;
+    }
+
+    void Draw() {
+        // Draw the tank with rotation
+        DrawRectanglePro(
+            { position.x + width / 2, position.y + height / 2, (float)width, (float)height },
+            { (float)width / 2, (float)height / 2 },
+            rotation,
+            BLUE
+        );
+    }
+};
+
+class Projectile {
+private:
+    Vector2 position;
+    Vector2 velocity;
+    float gravity;
+    bool isActive;
+
+public:
+    Projectile() : isActive(false) {}
+
+    void Shoot(const Vector2& startPos, const Vector2& targetPos, float initialVelocity, float grav) {
+        position = startPos;
+        velocity = { (targetPos.x - startPos.x) / 60 * initialVelocity, (targetPos.y - startPos.y) / 60 * initialVelocity };
+        gravity = grav;
+        isActive = true;
+    }
+
+    void Update(int terrain[], void (*HandleTerrainImpact)(int[], Vector2, float)) {
+        if (isActive) {
+            // Apply gravity
+            velocity.y += gravity;
+
+            // Update position based on velocity
+            position.x += velocity.x;
+            position.y += velocity.y;
+
+            // Check for collision with terrain
+            int terrainIndex = position.x / TERRAIN_SEGMENT_WIDTH;
+            if (terrainIndex >= 0 && terrainIndex < TERRAIN_WIDTH && position.y >= SCREEN_HEIGHT - terrain[terrainIndex]) {
+                isActive = false;
+                // Call the terrain impact handler
+                HandleTerrainImpact(terrain, position, 50.0f); // 50.0f is the explosion radius
+            }
+
+            // Check for horizontal screen boundaries
+            if (position.x < 0 || position.x > SCREEN_WIDTH) {
+                isActive = false; // Set projectile as inactive if out of horizontal boundaries
+            }
+        }
+    }
+
+    bool IsActive() const {
+        return isActive;
+    }
+
+    Vector2 GetPosition() const {
+        return position;
+    }
+
+    void Draw() {
+        if (isActive) {
+            DrawCircle(position.x, position.y, 10, RED);
+        }
+    }
+};
+
+class Game {
+public:
+    Game();
+    void Update();
+    void Draw();
+    void HandlePlayerShooting(const Tank& player);
+    void Terrain();
+    static void HandleTerrainImpact(int terrain[], Vector2 impactPos, float radius);
+
+private:
+    Tank player1;
+    Tank player2;
+    Projectile currentProjectile;
+    bool isPlayer1Turn;
+    bool projectileActive; // Add flag to check if a projectile is active
+    int terrain[TERRAIN_WIDTH];
+};
+
+Game::Game() : player1(5.0f, Vector2{ 100, 800 }), player2(5.0f, Vector2{ 1700, 800 }),
+    isPlayer1Turn(true), projectileActive(false) {
+    // Initialize game state
+}
+
+void Game::HandlePlayerShooting(const Tank& player) {
+    if (!projectileActive && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+        Vector2 mousePos = GetMousePosition();
+        Vector2 playerPos = player.GetPosition();
+
+        // Calculate distance between player and mouse cursor
+        float distance = sqrt(pow(mousePos.x - playerPos.x, 2) + pow(mousePos.y - playerPos.y, 2));
+
+        float power;
+        // Define the power range
+        if (distance >= 1.5f) {
+            power = 1.5f;
+        } else if (distance <= 1.0f) {
+            power = 1.0f;
+        } else {
+            power = distance;
+        }
+        // Map distance to the power range
+
+        // Shoot projectile with calculated power
+        currentProjectile.Shoot(playerPos, mousePos, power, 0.3f);
+        projectileActive = true; // Set projectile as active after shooting
+    }
+}
+
+void Game::Update() {
+    // Always apply gravity to both players
+    player1.ApplyGravity(terrain);
+    player2.ApplyGravity(terrain);
+
+    // Update movement for the active player
+    if (!projectileActive) {
+        if (isPlayer1Turn) {
+            player1.HandleInput(terrain);
+            HandlePlayerShooting(player1);
+        } else {
+            player2.HandleInput(terrain);
+            HandlePlayerShooting(player2);
+        }
+    }
+
+    // Update the projectile's state and position
+    currentProjectile.Update(terrain, HandleTerrainImpact);
+
+    // Switch turn if the projectile is no longer active
+    if (projectileActive && !currentProjectile.IsActive()) {
+        projectileActive = false;
+        isPlayer1Turn = !isPlayer1Turn; // Switch turn
+    }
+}
+
+void Game::Terrain() {
+    srand(static_cast<unsigned int>(time(NULL))); // Use static_cast to avoid warning
+
+    // Generate terrain
+    terrain[0] = rand() % MAX_HEIGHT; // Random height for the first column
+
+    for (int i = 1; i < TERRAIN_WIDTH; i++) {
+        int prevHeight = terrain[i - 1];
+        int change = (rand() % (2 * HEIGHT_DIFF + 1)) - HEIGHT_DIFF; // Random change between -4 and 4
+        terrain[i] = prevHeight + change;
+
+        // Ensure the height is within bounds
+        if (terrain[i] < 0) terrain[i] = 0;
+        if (terrain[i] >= MAX_HEIGHT) terrain[i] = MAX_HEIGHT - 1;
+    }
+}
+
+void Game::HandleTerrainImpact(int terrain[], Vector2 impactPos, float radius) {
+    int impactIndex = impactPos.x / TERRAIN_SEGMENT_WIDTH;
+    int impactRadius = radius / TERRAIN_SEGMENT_WIDTH;
+
+    for (int i = impactIndex - impactRadius; i <= impactIndex + impactRadius; i++) {
+        if (i >= 0 && i < TERRAIN_WIDTH) {
+            float distanceToImpact = fabs(i * TERRAIN_SEGMENT_WIDTH - impactPos.x);
+            if (distanceToImpact < radius) {
+                int craterDepth = sqrt(radius * radius - distanceToImpact * distanceToImpact);
+                terrain[i] = terrain[i] - craterDepth;
+                if (terrain[i] < 0) terrain[i] = 0;
+            }
+        }
+    }
+}
+
+void Game::Draw() {
+    player1.Draw();
+    player2.Draw();
+
+    // Draw projectile
+    if (currentProjectile.IsActive()) {
+        currentProjectile.Draw();
+    }
+
+    // Draw terrain
+    for (int i = 0; i < TERRAIN_WIDTH; i++) {
+        DrawRectangle(i * TERRAIN_SEGMENT_WIDTH, SCREEN_HEIGHT - terrain[i], TERRAIN_SEGMENT_WIDTH, terrain[i], DARKGREEN);
+    }
+    // Draw other game objects
+}
+
+int main() {
+    const int screenWidth = GetMonitorWidth(0); // Get the width of the primary monitor
+    const int screenHeight = GetMonitorHeight(0); // Get the height of the primary monitor
+
+    InitWindow(screenWidth, screenHeight, "Tanky");
+    //SetWindowState(FLAG_FULLSCREEN_MODE); // Set the window to fullscreen mode
+
+    SetTargetFPS(60);
+
+    Game game;
+
+    game.Terrain();
+
+    while (!WindowShouldClose()) {
+        game.Update();
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+        game.Draw();
+        EndDrawing();
+    }
+
+    CloseWindow();
+
+    return 0;
+}
